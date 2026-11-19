@@ -1782,6 +1782,123 @@ def _(report):
         == _shipped() - 1 - len(SILENT_ON_FIXTURE), plain["summary"]
 
 
+# --- a detector says when the trace did not hold what it reads (#441) -------
+#
+# One case per source (`needs.SOURCES`): the fixture recorded without it, and
+# the detectors that read it come back not checked, with a reason that names
+# what is missing — and no other detector does. A silent detector and one
+# that could not look are different answers, and a list that marks every
+# silent check fine would tick the ones that never looked.
+
+def _recorded(**variant) -> dict:
+    """The fixture recorded the way `variant` says (`fixture.build`), analysed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = Path(tmp) / "variant.perfetto-trace"
+        trace.write_bytes(fixture.build(**variant))
+        return _analyze(trace, Config(FIXTURE_CONFIG))
+
+
+def _categories_without(name: str) -> tuple[str, ...]:
+    return tuple(c for c in fixture.RECORDED_CATEGORIES if c != name)
+
+
+def _not_checked(rep: dict, ids: set[str], said: str) -> None:
+    """`ids` could not look, for a reason that says `said`, and nothing else could."""
+    got = {d["id"]: d["reason"] for d in rep["detectors"] if d["checked"] is False}
+    assert set(got) == ids, (sorted(got), sorted(ids))
+    for detector, why in got.items():
+        assert said in why, (detector, why)
+
+
+@check("needs: on the fixture every detector looked, and none has a reason")
+def _(report):
+    for d in report["detectors"]:
+        assert d["checked"] is True, (d["id"], d["checked"], d.get("reason"))
+        assert "reason" not in d, d
+
+
+@check("needs: a recording without the platform's state could not look at the disk")
+def _(report):
+    _not_checked(_recorded(environment=False),
+                 {"io_wait", "main_thread_kernel_waits"}, "phone's own state")
+
+
+@check("needs: a trace without a frame timeline could not look at frames")
+def _(report):
+    _not_checked(_recorded(frames=False), {"frame_jank"}, "no frame timeline")
+
+
+@check("needs: a recording without composable names could not look at composables")
+def _(report):
+    plain = _recorded(composables=False)
+    _not_checked(plain, {"composables"}, "does not carry the names of composables")
+    assert plain["environment"]["compose_names"] is None, plain["environment"]
+    # A recording that asked for them, from an app that wrote none, says that
+    # instead: the cause is not the recording's.
+    asked = _recorded(composables=False, names=True)
+    _not_checked(asked, {"composables"}, "asked for the names of composables")
+
+
+@check("needs: a recording that did not ask for the activity manager could not look at freezes")
+def _(report):
+    _not_checked(_recorded(categories=_categories_without("am")),
+                 {"anr", "app_init"}, "activity records")
+
+
+@check("needs: a recording that did not ask for the runtime's records could not look at the collector")
+def _(report):
+    _not_checked(_recorded(categories=_categories_without("dalvik")),
+                 {"gc_pressure", "monitor_contention"}, "runtime's records")
+
+
+@check("needs: a recording that did not ask for binder could not look at calls between processes")
+def _(report):
+    _not_checked(_recorded(categories=_categories_without("binder_driver")),
+                 {"binder_txn"}, "calls between processes")
+
+
+@check("needs: report.md names what could not run, and does not call it silent")
+def _(report):
+    from . import report as report_mod
+    assert "could not run" not in report_mod.to_markdown(report)
+    md = report_mod.to_markdown(_recorded(environment=False))
+    said = next(ln for ln in md.splitlines() if "could not run" in ln)
+    assert "`io_wait`, `main_thread_kernel_waits`" in said, said
+    silent = next(ln for ln in md.splitlines() if ln.startswith("**Silent:**"))
+    assert "io_wait" not in silent and "kernel_waits" not in silent, silent
+    assert "anr_risk" in silent, silent
+
+
+@check("needs: a set is checked only when every repeat was")
+def _(report):
+    from . import report as report_mod
+    bare = _recorded(environment=False)
+    merged = report_mod.aggregate([report, bare, report])
+    by_id = {d["id"]: d for d in merged["detectors"]}
+    assert by_id["io_wait"]["checked"] is False, by_id["io_wait"]
+    assert "1 of the 3 recordings" in by_id["io_wait"]["reason"], by_id["io_wait"]
+    assert by_id["gc_pressure"]["checked"] is True, by_id["gc_pressure"]
+    assert "reason" not in by_id["gc_pressure"], by_id["gc_pressure"]
+
+
+@check("needs: compare does not call what one side could not look at gone")
+def _(report):
+    from . import compare as compare_mod
+    bare = _recorded(environment=False)
+    cmp = compare_mod.build(report, bare, before_path="a.json", after_path="b.json")
+    # `io_wait` has rows on the full recording and none on the bare one. That
+    # is not a row that went away.
+    assert not [r for r in cmp["rows"]
+                if r["detector"] in ("io_wait", "main_thread_kernel_waits")], cmp["rows"]
+    assert cmp["summary"]["vanished"] == 0, cmp["summary"]
+    not_compared = {c["id"]: c for c in cmp["summary"]["not_compared"]}
+    assert set(not_compared) == {"io_wait", "main_thread_kernel_waits"}, not_compared
+    assert not_compared["io_wait"]["before"] is None and not_compared["io_wait"]["after"], \
+        not_compared["io_wait"]
+    assert "not-checked-after" in {w["id"] for w in cmp["warnings"]}, cmp["warnings"]
+    assert "io_wait" not in cmp["summary"]["silent_both"], cmp["summary"]
+
+
 # --- the window opening inside a block --------------------------------------
 
 def _anchored_at(anchor: str):
