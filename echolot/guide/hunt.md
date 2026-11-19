@@ -131,7 +131,27 @@ out of the conversation.
 
 Close the investigation first — every time, an interim conclusion or "clean"
 included — and only then answer the human. Left for after the answer, it is
-the step that gets skipped:
+the step that gets skipped.
+
+When the conclusion ends with a verdict file (`.echolot/verdict.json`, which
+`echolot guide loop` has the subagent write), close with that:
+
+```bash
+echolot hunt --done --verdict .echolot/verdict.json
+```
+
+echolot holds every row the verdict cites against the reports this
+investigation filed, and keeps the verdict as it was written. The subagent is
+told to run that same check on its file before it returns, with
+`echolot hunt --verdict <file>` and no `--done`, which records nothing, so a
+refusal here is the exception. If one comes — exit 2, with each entry it could
+not find named on stderr — nothing was recorded and the investigation is still
+open. Send the refusal back to the subagent when your host can continue it,
+since it has the evidence, and run the command again on the corrected file;
+without `--done` it only checks, which is the way to try a correction first.
+When the loop was yours, write the file yourself, in the form
+`echolot guide loop` gives, and check it the same way. With no file at all,
+close with the text:
 
 ```bash
 echolot hunt --done "TextLayout:initLayout on the main thread, :feature:profile — confidence high"
@@ -139,13 +159,14 @@ echolot hunt --done "TextLayout:initLayout on the main thread, :feature:profile 
 
 Left open, a finished hunt stays the open one: every later `analyze` is filed
 under it, and the next visit is asked whether to carry on with work that is
-over.
+over. `echolot hunt --show <n>` prints a verdict as text.
 
 Then show the conclusion as it is: do not retell it, and do not pad it with
 guesses.
 
-- **Cleanup.** It says whether the temporary markers were removed. If that is
-  unclear, check from the checkout's root:
+- **Cleanup.** It says whether the temporary markers were removed. Closing
+  with a verdict counts them too and warns on stderr when any are left. If it
+  is unclear, check from the checkout's root:
   `grep -rn --include='*.kt' --include='*.java' -e AGENTTMP_ -e 'echolot:mark' .` must come back empty.
 - **Confidence.** If it is low, say so rather than smoothing it over.
 - **The device.** A finding about the device rather than the code —

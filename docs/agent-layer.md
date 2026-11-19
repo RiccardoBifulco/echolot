@@ -667,6 +667,9 @@ looking for at 252.7 ms and returned a conclusion about something else, with
 no field to put the number in; and a suspect nobody measured to the end costs
 the next hunt a round spent rediscovering it.
 
+The same answer is also written as a verdict file, which echolot can check and
+keep in a form that reads back; see [Closing with a verdict](#closing-with-a-verdict).
+
 ## The loop protocol
 
 ```
@@ -779,8 +782,9 @@ with the human the way the first was.
 On the Claude Code path both ends belong to the `echolot-hunt` command. It
 opens the investigation with the human's question and the change (`--since`)
 before anything is recorded for it — unless the human is carrying on the one
-already open — and closes it with `echolot hunt --done` and one line of the
-conclusion when `perf-hunter` returns, whatever the answer was.
+already open — and closes it with `echolot hunt --done` when `perf-hunter` returns, whatever the
+answer was: with the verdict file the agent wrote, or one line of the
+conclusion when there is none.
 
 For a while the path opened one only when the door asked `resume-or-new` and
 the human chose something new, and closed none. `collect` and `analyze` file
@@ -793,6 +797,114 @@ next visit was asked `resume-or-new` about work that was over.
 investigation in its prompt and works inside it, which is the same boundary
 as the question above: which investigation is settled before the loop starts.
 
+### Closing with a verdict
+
+`echolot hunt --done "<text>"` keeps one string, and a string can be read and
+nothing else: it cannot be checked, and two hunts cannot be set side by side.
+What the loop returns has a shape every time, so a hunt can also be closed with
+that shape as JSON:
+
+```bash
+echolot hunt --done --verdict .echolot/verdict.json     # a file, or - for stdin
+echolot hunt --verdict .echolot/verdict.json            # only checks it, records nothing
+```
+
+```json
+{
+  "summary": "Nearly all of the extra time is one call, Store.fill(): 1.5 s of the 2.1 s launch.",
+  "inside": {"report": 2, "location": "AGENTTMP_fill"},
+  "causes": [
+    {
+      "title": "The store is filled in about 150 small transactions",
+      "where": ["store/StoreFiller.kt:70-88"],
+      "mechanism": "About 3,000 rows go in through about 150 transactions.",
+      "evidence": [
+        {"report": 2, "detector": "uninstrumented_cpu", "location": "arch_disk_io_0"},
+        {"report": 3, "location": "AGENTTMP_insert_cards"}
+      ],
+      "cost_ms": 1150,
+      "cost_of": "wall time of the inserts, as the AGENTTMP_insert_cards marker measured it",
+      "fix": "One transaction for the whole fill.",
+      "expected_ms": [300, 400],
+      "confidence": "high",
+      "confidence_why": "three runs in each of two rounds, within 10% of each other"
+    }
+  ],
+  "suggestions": [
+    {"fix": "Ship the rows in a prebuilt database instead of filling it at launch.",
+     "expected_ms": [1000, 1400]}
+  ],
+  "ruled_out": [
+    "Layout inflation: 41 ms in each of three runs, as before the change",
+    "Garbage collection: no pause above 8 ms in any run"
+  ],
+  "also_measured": [
+    "AGENTTMP_fill: 1,480 ms",
+    "AGENTTMP_insert_cards: 1,150 ms"
+  ],
+  "cleanup": "removed"
+}
+```
+
+Required: `summary`; `causes`, a list that is empty when nothing was found; and
+in each cause `title`, `where` (a list of places in the code) and `evidence`.
+A verdict with one cause and no estimate is a verdict. Optional: `mechanism`,
+`cost_ms` with `cost_of`, `fix`, `expected_ms`, `confidence` (`high`, `medium`
+or `low`) with `confidence_why`, `inside` and `cleanup` (`removed`,
+`none_added` or `left`) — and three lists at the top of the verdict.
+`ruled_out` and `also_measured` are the `Ruled out` and `Also measured` lines of
+the text conclusion, one string each. `suggestions` are changes that belong to
+no one cause, such as one change that makes several go away: each is
+`{"fix": "…", "expected_ms": …}`, `fix` required and `expected_ms` as in a
+cause. None of the three points at a row, so only their shape is checked. A
+field outside these lists is refused, at any level, so a misspelt optional one
+does not vanish without a word.
+
+**Cost and estimate.** `cost_ms` is what a cause costs, as measured: a number of
+milliseconds, or `[low, high]` when the runs differ, which the agent took from
+its rows. `cost_of` says what that number measures ("wall time of the inserts",
+"processor time on the disk threads", "of the launch") and is allowed only with
+`cost_ms`. `expected_ms` is what the fix should win back, the agent's estimate,
+a number or `[low, high]` as well. They are two fields so that a measurement is
+never taken for a guess, by a reader of the verdict or by a page drawn from it.
+Only their shape is checked: echolot does not recompute a cost from the rows,
+and `hunt --show` says a single measured number as it is and a single estimate
+as "about".
+
+**What is checked.** Every `evidence` entry, and `inside`, has to be a row of a
+report this investigation filed. `report` is the number a report is filed
+under (`reports/003.json` is report 3, which `analyze` prints when it files
+it); `location` is the row's `location` as the report holds it, compared as
+written; `detector` is optional, and without it the row may be any detector's or
+one of the markers'. A verdict that cites a row no report holds is refused: each
+entry and the reason is named on stderr, the exit code is 2 and nothing is
+recorded, so the investigation is still open for a corrected file. The check
+reads the verdict and the filed reports and nothing else, which makes the same
+verdict against the same reports accepted or refused the same way. It is the
+only thing echolot judges: the content is the agent's, and nothing is
+rewritten, ranked or filled in.
+
+**Checking without closing.** `echolot hunt --verdict <file>`, with no `--done`,
+makes that check and stops. It prints that the verdict would be accepted, or
+every entry it would refuse, and exits 0 or 2; it counts the markers in the
+sources the same way and says where they disagree with the verdict's `cleanup`.
+It records nothing and the investigation stays open. It is for the agent that
+wrote the file, which has the evidence in front of it and can put a refusal
+right before it returns: `perf-hunter` is told to run it, and never to close the
+investigation, which is the main thread's. The closing runs the same check
+again, so the two ends judge a verdict by the same rules. Like `--done`, it exits
+1 when no investigation is open or the last one is already concluded.
+
+**What is recorded.** `hunt.json` gains `verdict`, the file as it came, and
+`verdict_check`, what echolot found when it was handed in: the reports it held,
+how many rows the verdict cites, and the temporary markers that `hunt` counts
+in the sources (the same count `hunt "<q>"` makes for the previous
+investigation) next to what the verdict said about them. A disagreement is not a
+refusal; it is said on stderr and kept in both halves. `conclusion` is the
+verdict's `summary`, or the text given beside it, so `--list`, `status` and the
+recap read a verdict hunt as they read any other. `echolot hunt --show <n>`
+prints the verdict as text.
+
 ### Filed under the investigation, without moving
 
 `.echolot/traces/` and `.echolot/out/report.json` stay exactly where they are:
@@ -804,6 +916,7 @@ would rewrite all three for tidiness. What changed is that each artefact is
 .echolot/
 ├── hunt.json                    the open investigation; a closed one stays
 │                                here, readable, until the next one opens
+│                                (a verdict, when it closed with one)
 ├── traces/                      the working set — unchanged
 │   └── coldStart-<stamp>/       a round, pushed aside by collect
 ├── out/report.json|md           the latest report — unchanged
@@ -851,6 +964,10 @@ echolot hunt --list          every investigation, newest first
 echolot hunt --show 2        one of them in full — including where its traces went
 echolot hunt --resume        carry on with the open one
 echolot hunt --done "..."    record what it came to
+echolot hunt --done --verdict verdict.json
+                             the same as a structured verdict, checked first
+echolot hunt --verdict verdict.json
+                             only check a verdict: records nothing, closes nothing
 ```
 
 Each one is numbered, and everything it produces is filed under it: every

@@ -392,6 +392,102 @@ If it did not come together within the rounds allowed, return the same shape
 with an honest low confidence and say which signal was missing. An interim
 conclusion from the data at hand is more useful than "did not find it".
 
+**Then write the same answer as a verdict file**, `.echolot/verdict.json`,
+check it, and end your reply with its path. The main thread closes the
+investigation with it (`hunt --done --verdict`), and echolot checks every row
+it cites against the reports of this investigation before it keeps anything.
+The eight lines above are still what you return. The file says the same
+things in a form that can be checked, and your `Ruled out` and
+`Also measured` go in it as lists.
+
+```json
+{
+  "summary": "Nearly all of the extra time is one call, Store.fill(): 1.5 s of the 2.1 s launch.",
+  "inside": {"report": 2, "location": "AGENTTMP_fill"},
+  "causes": [
+    {
+      "title": "The store is filled in about 150 small transactions",
+      "where": ["store/StoreFiller.kt:70-88"],
+      "mechanism": "About 3,000 rows go in through about 150 transactions, one after another (inferred).",
+      "evidence": [
+        {"report": 2, "detector": "uninstrumented_cpu", "location": "arch_disk_io_0"},
+        {"report": 3, "location": "AGENTTMP_insert_cards"}
+      ],
+      "cost_ms": 1150,
+      "cost_of": "wall time of the inserts, as the AGENTTMP_insert_cards marker measured it",
+      "fix": "One transaction for the whole fill, lists inserted whole.",
+      "expected_ms": [300, 400],
+      "confidence": "high",
+      "confidence_why": "three runs in each of two rounds, within 10% of each other"
+    }
+  ],
+  "suggestions": [
+    {"fix": "Ship the rows in a prebuilt database instead of filling it at launch.",
+     "expected_ms": [1000, 1400]}
+  ],
+  "ruled_out": [
+    "Layout inflation: 41 ms in each of three runs, as before the change",
+    "Garbage collection: no pause above 8 ms in any run"
+  ],
+  "also_measured": [
+    "AGENTTMP_fill: 1,480 ms",
+    "AGENTTMP_insert_cards: 1,150 ms"
+  ],
+  "cleanup": "removed"
+}
+```
+
+- **Required:** `summary`; `causes`, a list, empty when nothing was found; and
+  in each cause `title`, `where` (a list of places in the code) and
+  `evidence`. One cause with no estimate is a verdict. Everything else is
+  optional: `mechanism`, `fix`, `expected_ms`, `confidence` (`high`, `medium`
+  or `low`) with `confidence_why`, `cost_ms` with `cost_of`, `inside`,
+  `cleanup`, and the three lists below. A field that is not listed here is
+  refused.
+- **Causes in the order of what they cost**, the largest first. In `mechanism`
+  mark the steps you did not measure with `(inferred)` and `(gap)`, as above.
+- **`cost_ms` is what the cause costs, measured, and `expected_ms` is what your
+  fix should win back, estimated.** Each goes in its own field and neither in
+  the other, so that a reader can tell a measurement from a guess. `cost_ms`
+  is a number of milliseconds taken from a report or one of your markers, or
+  `[low, high]` when the runs differ. `cost_of` says what that number
+  measures — `wall time of the inserts`, `processor time on the disk threads`,
+  `of the launch` — and goes only with `cost_ms`. `expected_ms` is yours, a
+  number or `[low, high]`. Leave either out when you have none.
+- **`ruled_out` and `also_measured`** are your `Ruled out` and `Also measured`
+  lines, one string each, in the same order. Leave `ruled_out` out when
+  nothing else was checked. They point at no row, so echolot holds them to
+  their shape and nothing else: each entry a non-empty string.
+- **`suggestions`** are changes that belong to no one cause, such as one change
+  that makes two causes go away: a list of `{"fix": "…", "expected_ms": …}`,
+  `fix` required and `expected_ms` as in a cause. A change that answers one
+  cause is that cause's `fix`.
+- **`evidence` is measured, and each entry is a row of a report of this
+  investigation.** `report` is the number the report is filed under:
+  `analyze` prints `→ .echolot/hunts/<n>/reports/003.json`, which is report 3,
+  and `echolot hunt --show <n>` lists them. `location` is the row's
+  `location` exactly as the report holds it — copy it from
+  `echolot report -d <detector> --json`, because the text view cuts a
+  location at 60 characters and a cut one matches nothing. `detector` is
+  optional; without it the row may be any detector's or one of your markers'
+  (`AGENTTMP_…`), and `inside` names a row the same way. A row no report holds
+  is refused, by name.
+- **`cleanup`** is `removed`, `none_added` or `left`, after the grep above.
+  echolot counts the markers in the sources itself, when it checks and when it
+  closes, and records its count beside what you said, so say what is true.
+
+**Check the file before you return**:
+
+```bash
+echolot hunt --verdict .echolot/verdict.json
+```
+
+Without `--done` it only checks: it records nothing and the investigation
+stays open, because closing it is the main thread's. It says the verdict would
+be accepted, or names every entry it would refuse, so the file is put right in
+one pass. Fix what it names and run it again until it is accepted, and say in
+your reply that it was. The file is yours: echolot keeps it as you wrote it.
+
 If the finding is about the device rather than the code
 (`runnable_starvation` on a loaded machine or an emulator) — say so. Sending
 someone to hunt a bug in code where the scheduler is at fault costs more than
