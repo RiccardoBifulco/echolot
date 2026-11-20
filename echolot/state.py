@@ -142,6 +142,8 @@ def _report(rep: Path) -> dict | None:
         return None
     try:
         r = json.loads(rep.read_text(encoding="utf-8"))
+        if not isinstance(r, dict):
+            return {"path": rep, "error": "unreadable"}
         s = r.get("summary") or {}
         c = r.get("config") or {}
         return {

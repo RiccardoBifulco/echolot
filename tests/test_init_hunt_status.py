@@ -145,11 +145,12 @@ def test_status_names_the_binary_local_yml_names(tmp_path: Path, monkeypatch) ->
     check("the custom binary", "Perfetto v99.0-custom" in out.splitlines()[0], out[:200])
 
 
-def test_a_report_that_does_not_read_is_said(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("body", ["{ truncated", "[]", "3", '"text"', "null"])
+def test_a_report_that_does_not_read_is_said(tmp_path: Path, monkeypatch, body: str) -> None:
     _project(tmp_path)
     out_dir = tmp_path / ".echolot" / "out"
     out_dir.mkdir(parents=True)
-    (out_dir / "report.json").write_text("{ truncated", encoding="utf-8")
+    (out_dir / "report.json").write_text(body, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     _, out, _ = _run("status")
     check("not none yet", "does not read" in out and "none yet" not in out, out)
